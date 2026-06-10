@@ -1,0 +1,7 @@
+# Godot auto-generated files — safe to ignore
+.godot/
+*.uid
+*.import
+
+# macOS clutter
+.DS_Store

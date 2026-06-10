@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <!-- Body -->
+  <ellipse cx="100" cy="110" rx="28" ry="45" fill="#6abf5e"/>
+  <!-- Head -->
+  <ellipse cx="100" cy="62" rx="22" ry="18" fill="#6abf5e"/>
+  <!-- Snout -->
+  <ellipse cx="100" cy="52" rx="13" ry="8" fill="#5aaf4e"/>
+  <!-- Eyes -->
+  <circle cx="90" cy="57" r="6" fill="#1a1a1a"/>
+  <circle cx="110" cy="57" r="6" fill="#1a1a1a"/>
+  <circle cx="91" cy="56" r="2" fill="white"/>
+  <circle cx="111" cy="56" r="2" fill="white"/>
+  <!-- Nostril dots -->
+  <circle cx="96" cy="51" r="1.5" fill="#3a8f3a"/>
+  <circle cx="104" cy="51" r="1.5" fill="#3a8f3a"/>
+  <!-- Tail -->
+  <path d="M100 155 Q85 175 75 190 Q90 185 100 170 Q110 185 125 190 Q115 175 100 155Z" fill="#5aaf4e"/>
+  <!-- Front left leg -->
+  <path d="M75 100 Q55 95 45 88" stroke="#6abf5e" stroke-width="10" stroke-linecap="round" fill="none"/>
+  <path d="M45 88 Q38 84 33 80" stroke="#5aaf4e" stroke-width="7" stroke-linecap="round" fill="none"/>
+  <!-- Front right leg -->
+  <path d="M125 100 Q145 95 155 88" stroke="#6abf5e" stroke-width="10" stroke-linecap="round" fill="none"/>
+  <path d="M155 88 Q162 84 167 80" stroke="#5aaf4e" stroke-width="7" stroke-linecap="round" fill="none"/>
+  <!-- Back left leg -->
+  <path d="M78 135 Q58 145 45 155" stroke="#6abf5e" stroke-width="10" stroke-linecap="round" fill="none"/>
+  <path d="M45 155 Q38 160 32 163" stroke="#5aaf4e" stroke-width="7" stroke-linecap="round" fill="none"/>
+  <!-- Back right leg -->
+  <path d="M122 135 Q142 145 155 155" stroke="#6abf5e" stroke-width="10" stroke-linecap="round" fill="none"/>
+  <path d="M155 155 Q162 160 168 163" stroke="#5aaf4e" stroke-width="7" stroke-linecap="round" fill="none"/>
+  <!-- Belly spots -->
+  <ellipse cx="100" cy="105" rx="10" ry="14" fill="#8fd97f" opacity="0.5"/>
+  <!-- Back spots -->
+  <circle cx="95" cy="85" r="4" fill="#4a9f3e" opacity="0.6"/>
+  <circle cx="105" cy="95" r="3.5" fill="#4a9f3e" opacity="0.6"/>
+  <circle cx="95" cy="115" r="3.5" fill="#4a9f3e" opacity="0.6"/>
+  <circle cx="106" cy="125" r="3" fill="#4a9f3e" opacity="0.6"/>
+</svg>
