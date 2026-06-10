@@ -4,8 +4,10 @@ extends Control
 var gecko_name: String = "Gecko"
 var hunger: int      = 100
 var hydration: int   = 100
-var temperature: int = 78
+var temperature: int = 72   # Base ambient temp (bottom of enclosure)
 var lamp_on: bool    = true
+var humidity: int    = 65   # Global humidity 0-100
+var time_of_day: int = 0    # 0=Dawn 1=Day 2=Dusk 3=Night, cycles each turn
 var day: int         = 1
 var alive: bool      = true
 
@@ -19,10 +21,9 @@ var plant_alive: bool   = true
 const PLANT_X: int = 2
 const PLANT_Y: int = 1
 
-# Crickets — each entry is a Dictionary: {x, y, age}
-# They die after CRICKET_LIFESPAN turns if not eaten
+# Crickets
 var crickets: Array = []
-const CRICKET_LIFESPAN: int = 5
+const CRICKET_LIFESPAN: int      = 5
 const CRICKET_HUNGER_RESTORE: int = 25
 
 const GRID_COLS: int = 4
@@ -33,6 +34,12 @@ const TEMP_MAX: int      = 95
 const TEMP_SAFE_LOW: int  = 72
 const TEMP_SAFE_HIGH: int = 88
 
+# How much warmer each row feels vs the base temp (heat rises, lamp at top)
+# Index 0 = top row, index 5 = substrate
+const ROW_TEMP_BONUS: Array = [8, 6, 4, 2, 1, 0]
+
+const TIME_NAMES:  Array = ["Dawn 🌅", "Day ☀️", "Dusk 🌇", "Night 🌙"]
+
 const ROW_LABELS: Array = ["Top", "  ↕ ", "Mid", "  ↕ ", "Bot", "Sub"]
 
 # --- UI Nodes ---
@@ -41,9 +48,12 @@ var name_input: LineEdit
 var game_screen: Control
 
 var day_label: Label
+var time_label: Label
 var hunger_label: Label
 var hydration_label: Label
-var temperature_label: Label
+var base_temp_label: Label
+var felt_temp_label: Label
+var humidity_label: Label
 var position_label: Label
 var plant_label: Label
 var cricket_label: Label
@@ -114,7 +124,7 @@ func _on_start_pressed() -> void:
 	gecko_name = entered if entered.length() > 0 else "Gecko"
 	name_screen.hide()
 	game_screen.show()
-	_log("Day 1: %s moves in. A pothos sits in the corner." % gecko_name)
+	_log("Day 1 — %s: %s moves in. A pothos sits in the corner." % [TIME_NAMES[time_of_day], gecko_name])
 	_update_display()
 
 
@@ -141,6 +151,7 @@ func _build_game_screen() -> void:
 
 	_build_grid_column(hbox)
 	_build_stats_column(hbox)
+	_build_log_column(hbox)
 
 
 func _build_grid_column(parent: Node) -> void:
@@ -192,6 +203,30 @@ func _build_grid_column(parent: Node) -> void:
 			tile_labels[idx] = lbl
 
 
+func _build_log_column(parent: Node) -> void:
+	var col = VBoxContainer.new()
+	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.size_flags_vertical   = Control.SIZE_EXPAND_FILL
+	col.add_theme_constant_override("separation", 8)
+	parent.add_child(col)
+
+	var log_title = Label.new()
+	log_title.text = "=== Turn Log ==="
+	log_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	col.add_child(log_title)
+
+	col.add_child(HSeparator.new())
+
+	log_scroll = ScrollContainer.new()
+	log_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	col.add_child(log_scroll)
+
+	log_container = VBoxContainer.new()
+	log_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	log_container.add_theme_constant_override("separation", 4)
+	log_scroll.add_child(log_container)
+
+
 func _build_stats_column(parent: Node) -> void:
 	var right = VBoxContainer.new()
 	right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -208,12 +243,18 @@ func _build_stats_column(parent: Node) -> void:
 	day_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	right.add_child(day_label)
 
+	time_label = Label.new()
+	time_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	right.add_child(time_label)
+
 	right.add_child(HSeparator.new())
 
-	hunger_label      = Label.new(); right.add_child(hunger_label)
-	hydration_label   = Label.new(); right.add_child(hydration_label)
-	temperature_label = Label.new(); right.add_child(temperature_label)
-	position_label    = Label.new(); right.add_child(position_label)
+	hunger_label    = Label.new(); right.add_child(hunger_label)
+	hydration_label = Label.new(); right.add_child(hydration_label)
+	position_label  = Label.new(); right.add_child(position_label)
+	felt_temp_label = Label.new(); right.add_child(felt_temp_label)
+	base_temp_label = Label.new(); right.add_child(base_temp_label)
+	humidity_label  = Label.new(); right.add_child(humidity_label)
 
 	right.add_child(HSeparator.new())
 
@@ -244,7 +285,7 @@ func _build_stats_column(parent: Node) -> void:
 	right.add_child(lamp_button)
 
 	mist_button = Button.new()
-	mist_button.text = "Mist Plant  💧 (+40 moisture)"
+	mist_button.text = "Mist Enclosure 💧  (+moisture +humidity)"
 	mist_button.pressed.connect(_on_mist_pressed)
 	right.add_child(mist_button)
 
@@ -261,21 +302,6 @@ func _build_stats_column(parent: Node) -> void:
 	restart_button.hide()
 	right.add_child(restart_button)
 
-	right.add_child(HSeparator.new())
-
-	var log_title = Label.new()
-	log_title.text = "Turn Log"
-	right.add_child(log_title)
-
-	log_scroll = ScrollContainer.new()
-	log_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	log_scroll.custom_minimum_size = Vector2(0, 80)
-	right.add_child(log_scroll)
-
-	log_container = VBoxContainer.new()
-	log_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	log_container.add_theme_constant_override("separation", 2)
-	log_scroll.add_child(log_container)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -302,40 +328,59 @@ func _on_lamp_pressed() -> void:
 
 func _on_mist_pressed() -> void:
 	if not alive: return
-	if not plant_alive:
-		_log("The plant is dead — nothing to mist.")
-		return
-	plant_moisture = min(100, plant_moisture + 40)
-	_log("You misted the pothos.  Moisture → %d" % plant_moisture)
+	humidity = min(100, humidity + 20)
+	if plant_alive:
+		plant_moisture = min(100, plant_moisture + 40)
+		_log("You misted the enclosure.  Humidity → %d, plant moisture → %d" % [humidity, plant_moisture])
+	else:
+		_log("You misted the enclosure.  Humidity → %d" % humidity)
 	_update_display()
 
 func _on_end_turn_pressed() -> void:
 	if not alive: return
-	day       += 1
-	hunger     = max(0, hunger    - 20)
-	hydration  = max(0, hydration - 25)
+
+	# Advance time of day and announce phase changes
+	var prev_time = time_of_day
+	time_of_day = (time_of_day + 1) % 4
+	if time_of_day != prev_time:
+		_log("— %s —" % TIME_NAMES[time_of_day])
+
+	day      += 1
+	hunger    = max(0, hunger    - 20)
+
+	# Dry air makes the gecko thirstier
+	var thirst_drain = 25 + (10 if humidity < 40 else 0)
+	hydration = max(0, hydration - thirst_drain)
+
+	# Lamp raises base temp; it cools overnight without it
 	if lamp_on:
 		temperature = min(TEMP_MAX, temperature + 5)
 	else:
 		temperature = max(TEMP_MIN, temperature - 5)
+
+	# Humidity drops naturally each turn
+	humidity = max(0, humidity - 8)
 
 	_move_gecko()
 	_gecko_hunt()
 	_advance_plant()
 	_age_crickets()
 
+	# Gecko's felt temp depends on its row
+	var felt = _felt_temp()
 	var events: Array = []
-	if hunger      == 0: events.append("starved")
-	if hydration   == 0: events.append("dehydrated")
-	if temperature <= TEMP_MIN: events.append("froze")
-	if temperature >= TEMP_MAX: events.append("overheated")
+	if hunger      == 0:           events.append("starved")
+	if hydration   == 0:           events.append("dehydrated")
+	if felt        <= TEMP_MIN:    events.append("froze")
+	if felt        >= TEMP_MAX:    events.append("overheated")
 
 	if events.size() > 0:
 		alive = false
 		_log("Day %d: %s %s — game over." % [day, gecko_name, ", ".join(events)])
 	else:
-		var summary = "Day %d: hunger %d, hydration %d, temp %d°F." % [day, hunger, hydration, temperature]
-		if hunger < 30 or hydration < 30 or temperature < TEMP_SAFE_LOW or temperature > TEMP_SAFE_HIGH:
+		var summary = "Day %d: hunger %d, hydration %d, felt temp %d°F, humidity %d%%." \
+			% [day, hunger, hydration, felt, humidity]
+		if _has_warnings():
 			summary += "  ⚠ Needs attention!"
 		_log(summary)
 
@@ -344,8 +389,10 @@ func _on_end_turn_pressed() -> void:
 func _on_restart_pressed() -> void:
 	hunger         = 100
 	hydration      = 100
-	temperature    = 78
+	temperature    = 72
 	lamp_on        = true
+	humidity       = 65
+	time_of_day    = 0
 	day            = 1
 	alive          = true
 	gecko_x        = 1
@@ -361,6 +408,21 @@ func _on_restart_pressed() -> void:
 
 
 # ══════════════════════════════════════════════════════════════
+# CLIMATE
+# ══════════════════════════════════════════════════════════════
+
+func _felt_temp() -> int:
+	# Gecko feels the base temp plus the warmth bonus of its current row
+	return temperature + ROW_TEMP_BONUS[gecko_y]
+
+func _humidity_desc() -> String:
+	if humidity < 30: return "very dry ⚠"
+	if humidity < 50: return "dry"
+	if humidity > 85: return "very humid"
+	return "good"
+
+
+# ══════════════════════════════════════════════════════════════
 # CRICKET LOGIC
 # ══════════════════════════════════════════════════════════════
 
@@ -371,16 +433,14 @@ func _spawn_crickets(count: int) -> int:
 		attempts += 1
 		var x = randi() % GRID_COLS
 		var y = randi() % GRID_ROWS
-		# Don't spawn on gecko or plant tile, or on an existing cricket
 		if x == gecko_x and y == gecko_y: continue
-		if x == PLANT_X and y == PLANT_Y: continue
+		if x == PLANT_X  and y == PLANT_Y:  continue
 		if _cricket_at(x, y) != -1: continue
 		crickets.append({"x": x, "y": y, "age": 0})
 		spawned += 1
 	return spawned
 
 func _cricket_at(x: int, y: int) -> int:
-	# Returns index of cricket at (x,y), or -1 if none
 	for i in range(crickets.size()):
 		if crickets[i].x == x and crickets[i].y == y:
 			return i
@@ -412,7 +472,19 @@ func _age_crickets() -> void:
 
 func _advance_plant() -> void:
 	if not plant_alive: return
+
 	plant_moisture = max(0, plant_moisture - 15)
+
+	# High humidity slows drying a little
+	if humidity > 60:
+		plant_moisture = min(100, plant_moisture + 3)
+
+	# Light bonus during Day phase
+	var light_bonus = 0
+	if time_of_day == 1:    light_bonus = 3   # full day
+	elif time_of_day == 0 or time_of_day == 2:
+		light_bonus = 1                        # dawn / dusk
+
 	if plant_moisture < 20:
 		plant_health = max(0, plant_health - 10)
 		_log("The pothos is drying out!  Health → %d" % plant_health)
@@ -420,20 +492,21 @@ func _advance_plant() -> void:
 		plant_health = max(0, plant_health - 3)
 		_log("The pothos is waterlogged.  Health → %d" % plant_health)
 	else:
-		plant_health = min(100, plant_health + 2)
+		plant_health = min(100, plant_health + 2 + light_bonus)
+
 	if plant_health == 0:
 		plant_alive = false
 		_log("The pothos has died. 🍂")
 
 
 # ══════════════════════════════════════════════════════════════
-# HELPERS
+# GECKO MOVEMENT
 # ══════════════════════════════════════════════════════════════
 
 func _move_gecko() -> void:
 	var dirs = [Vector2i(-1,0), Vector2i(1,0), Vector2i(0,-1), Vector2i(0,1)]
 
-	# If a cricket is adjacent, move straight to it
+	# Adjacent cricket — always move to it
 	for d in dirs:
 		var nx = gecko_x + d.x
 		var ny = gecko_y + d.y
@@ -443,7 +516,16 @@ func _move_gecko() -> void:
 				gecko_y = ny
 				return
 
-	# If a cricket is within 2 tiles, move toward the nearest one (70% chance)
+	# Thermoregulation: if too hot move down, if too cold move up
+	var felt = _felt_temp()
+	if felt > TEMP_SAFE_HIGH and gecko_y < GRID_ROWS - 1:
+		gecko_y += 1
+		return
+	if felt < TEMP_SAFE_LOW and gecko_y > 0:
+		gecko_y -= 1
+		return
+
+	# Bias toward nearest cricket (70% chance)
 	var nearest = _nearest_cricket()
 	if nearest != Vector2i(-1, -1) and randf() < 0.7:
 		var best_dir = Vector2i(0, 0)
@@ -461,7 +543,7 @@ func _move_gecko() -> void:
 			gecko_y += best_dir.y
 			return
 
-	# Otherwise wander randomly
+	# Random wander
 	dirs.shuffle()
 	for d in dirs:
 		var nx = gecko_x + d.x
@@ -481,6 +563,11 @@ func _nearest_cricket() -> Vector2i:
 			best = Vector2i(c.x, c.y)
 	return best
 
+
+# ══════════════════════════════════════════════════════════════
+# HELPERS
+# ══════════════════════════════════════════════════════════════
+
 func _log(text: String) -> void:
 	var lbl = Label.new()
 	lbl.text = text
@@ -490,17 +577,20 @@ func _log(text: String) -> void:
 	await get_tree().process_frame
 	log_scroll.scroll_vertical = log_scroll.get_v_scroll_bar().max_value
 
+func _has_warnings() -> bool:
+	var felt = _felt_temp()
+	return hunger < 30 or hydration < 30 \
+		or felt < TEMP_SAFE_LOW or felt > TEMP_SAFE_HIGH \
+		or humidity < 30 \
+		or (plant_alive and plant_moisture < 20) \
+		or (crickets.is_empty() and hunger < 50)
+
 func _tile_emoji(x: int, y: int) -> String:
-	var has_gecko   = (x == gecko_x and y == gecko_y)
-	var has_plant   = (plant_alive and x == PLANT_X and y == PLANT_Y)
-	var has_dead    = (not plant_alive and x == PLANT_X and y == PLANT_Y)
-	var has_cricket = (_cricket_at(x, y) != -1)
-	# Build up the tile contents
 	var parts: Array = []
-	if has_gecko:   parts.append("🦎")
-	if has_plant:   parts.append("🌱")
-	if has_dead:    parts.append("🍂")
-	if has_cricket: parts.append("🦗")
+	if x == gecko_x and y == gecko_y:                    parts.append("🦎")
+	if plant_alive  and x == PLANT_X and y == PLANT_Y:   parts.append("🌱")
+	if not plant_alive and x == PLANT_X and y == PLANT_Y: parts.append("🍂")
+	if _cricket_at(x, y) != -1:                           parts.append("🦗")
 	return "".join(parts)
 
 func _tile_color(x: int, y: int) -> Color:
@@ -509,10 +599,12 @@ func _tile_color(x: int, y: int) -> Color:
 	if plant_alive and x == PLANT_X and y == PLANT_Y:
 		var t = plant_health / 100.0
 		return Color(0.10 + 0.15 * t, 0.30 + 0.20 * t, 0.08)
+	# Night darkens the top rows slightly
+	var night_dim = 0.04 if time_of_day == 3 else 0.0
 	if y == GRID_ROWS - 1:  return Color(0.22, 0.14, 0.06)
 	if y >= GRID_ROWS - 3:  return Color(0.20, 0.16, 0.10)
-	if y >= 2:              return Color(0.18, 0.20, 0.14)
-	return Color(0.20, 0.22, 0.18)
+	if y >= 2:              return Color(0.18, 0.20 - night_dim, 0.14)
+	return Color(0.20, 0.22 - night_dim, 0.18)
 
 func _make_stylebox(color: Color) -> StyleBoxFlat:
 	var s = StyleBoxFlat.new()
@@ -524,43 +616,50 @@ func _make_stylebox(color: Color) -> StyleBoxFlat:
 func _plant_status_text() -> String:
 	if not plant_alive:
 		return "Pothos:      dead 🍂"
-	var moisture_desc: String
-	if plant_moisture < 20:   moisture_desc = "bone dry ⚠"
-	elif plant_moisture < 40: moisture_desc = "dry"
-	elif plant_moisture > 80: moisture_desc = "waterlogged"
-	else:                     moisture_desc = "good"
-	return "Pothos:      health %d  moisture %d (%s)" % [plant_health, plant_moisture, moisture_desc]
+	var desc: String
+	if plant_moisture < 20:   desc = "bone dry ⚠"
+	elif plant_moisture < 40: desc = "dry"
+	elif plant_moisture > 80: desc = "waterlogged"
+	else:                     desc = "good"
+	return "Pothos:      health %d  moisture %d (%s)" % [plant_health, plant_moisture, desc]
 
 func _update_display() -> void:
+	# Grid
 	for y in range(GRID_ROWS):
 		for x in range(GRID_COLS):
 			var idx = y * GRID_COLS + x
 			tile_panels[idx].add_theme_stylebox_override("panel", _make_stylebox(_tile_color(x, y)))
 			tile_labels[idx].text = _tile_emoji(x, y)
 
-	day_label.text         = "Day %d  —  %s" % [day, gecko_name]
-	hunger_label.text      = "Hunger:      %d / 100" % hunger
-	hydration_label.text   = "Hydration:   %d / 100" % hydration
-	temperature_label.text = "Temperature: %d°F  (safe: %d–%d)" % [temperature, TEMP_SAFE_LOW, TEMP_SAFE_HIGH]
-	lamp_button.text       = "Heat Lamp:  %s" % ("ON  🔆" if lamp_on else "OFF  🌑")
-	plant_label.text       = _plant_status_text()
-	cricket_label.text     = "Crickets:    %d in enclosure" % crickets.size()
-	mist_button.disabled   = not plant_alive
-
+	var felt = _felt_temp()
 	var layer: String
-	if gecko_y <= 1:   layer = "top layer"
-	elif gecko_y <= 3: layer = "middle layer"
-	elif gecko_y == 4: layer = "bottom layer"
+	if gecko_y <= 1:   layer = "top"
+	elif gecko_y <= 3: layer = "middle"
+	elif gecko_y == 4: layer = "bottom"
 	else:              layer = "substrate"
-	position_label.text = "Location:    col %d, %s" % [gecko_x, layer]
 
+	day_label.text      = "Day %d  —  %s" % [day, gecko_name]
+	time_label.text     = TIME_NAMES[time_of_day]
+	hunger_label.text   = "Hunger:      %d / 100" % hunger
+	hydration_label.text = "Hydration:   %d / 100" % hydration
+	position_label.text = "Location:    col %d, %s layer" % [gecko_x, layer]
+	felt_temp_label.text = "Felt temp:   %d°F  (safe %d–%d)" % [felt, TEMP_SAFE_LOW, TEMP_SAFE_HIGH]
+	base_temp_label.text = "Base temp:   %d°F  lamp %s" % [temperature, "ON" if lamp_on else "OFF"]
+	humidity_label.text  = "Humidity:    %d%%  (%s)" % [humidity, _humidity_desc()]
+	lamp_button.text     = "Heat Lamp:  %s" % ("ON  🔆" if lamp_on else "OFF  🌑")
+	plant_label.text     = _plant_status_text()
+	cricket_label.text   = "Crickets:    %d in enclosure" % crickets.size()
+	mist_button.disabled = false
+
+	# Warnings
 	var warnings: Array = []
-	if hunger      < 30:                 warnings.append("hungry")
-	if hydration   < 30:                 warnings.append("thirsty")
-	if temperature < TEMP_SAFE_LOW:      warnings.append("too cold")
-	if temperature > TEMP_SAFE_HIGH:     warnings.append("too hot")
-	if plant_alive and plant_moisture < 20: warnings.append("plant needs water")
-	if crickets.is_empty() and hunger < 50: warnings.append("no crickets in enclosure")
+	if hunger      < 30:                          warnings.append("hungry")
+	if hydration   < 30:                          warnings.append("thirsty")
+	if felt        < TEMP_SAFE_LOW:               warnings.append("too cold")
+	if felt        > TEMP_SAFE_HIGH:              warnings.append("too hot")
+	if humidity    < 30:                          warnings.append("air too dry")
+	if plant_alive and plant_moisture < 20:       warnings.append("plant needs water")
+	if crickets.is_empty() and hunger < 50:       warnings.append("no crickets in enclosure")
 
 	if not alive:
 		status_label.text              = "%s didn't make it. Try again!" % gecko_name
