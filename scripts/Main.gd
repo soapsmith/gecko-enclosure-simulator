@@ -2,15 +2,28 @@ extends Control
 
 # --- Game State ---
 var gecko_name: String = "Gecko"
-var hunger: int     = 100
-var hydration: int  = 100
+var hunger: int      = 100
+var hydration: int   = 100
 var temperature: int = 78
-var lamp_on: bool   = true
-var day: int        = 1
-var alive: bool     = true
+var lamp_on: bool    = true
+var day: int         = 1
+var alive: bool      = true
 
 var gecko_x: int = 1
 var gecko_y: int = 2
+
+# Plant
+var plant_health: int   = 100
+var plant_moisture: int = 60
+var plant_alive: bool   = true
+const PLANT_X: int = 2
+const PLANT_Y: int = 1
+
+# Crickets — each entry is a Dictionary: {x, y, age}
+# They die after CRICKET_LIFESPAN turns if not eaten
+var crickets: Array = []
+const CRICKET_LIFESPAN: int = 5
+const CRICKET_HUNGER_RESTORE: int = 25
 
 const GRID_COLS: int = 4
 const GRID_ROWS: int = 6
@@ -32,10 +45,13 @@ var hunger_label: Label
 var hydration_label: Label
 var temperature_label: Label
 var position_label: Label
+var plant_label: Label
+var cricket_label: Label
 var status_label: Label
-var feed_button: Button
+var add_crickets_button: Button
 var water_button: Button
 var lamp_button: Button
+var mist_button: Button
 var end_turn_button: Button
 var restart_button: Button
 var log_container: VBoxContainer
@@ -80,7 +96,6 @@ func _build_name_screen() -> void:
 	name_input = LineEdit.new()
 	name_input.placeholder_text = "Enter a name..."
 	name_input.custom_minimum_size = Vector2(360, 0)
-	name_input.text = ""
 	name_input.grab_focus()
 	name_input.text_submitted.connect(_on_name_submitted)
 	vbox.add_child(name_input)
@@ -99,6 +114,7 @@ func _on_start_pressed() -> void:
 	gecko_name = entered if entered.length() > 0 else "Gecko"
 	name_screen.hide()
 	game_screen.show()
+	_log("Day 1: %s moves in. A pothos sits in the corner." % gecko_name)
 	_update_display()
 
 
@@ -201,6 +217,11 @@ func _build_stats_column(parent: Node) -> void:
 
 	right.add_child(HSeparator.new())
 
+	plant_label   = Label.new(); right.add_child(plant_label)
+	cricket_label = Label.new(); right.add_child(cricket_label)
+
+	right.add_child(HSeparator.new())
+
 	status_label = Label.new()
 	status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	status_label.autowrap_mode = TextServer.AUTOWRAP_WORD
@@ -208,10 +229,10 @@ func _build_stats_column(parent: Node) -> void:
 
 	right.add_child(HSeparator.new())
 
-	feed_button = Button.new()
-	feed_button.text = "Feed Gecko  (+30 hunger)"
-	feed_button.pressed.connect(_on_feed_pressed)
-	right.add_child(feed_button)
+	add_crickets_button = Button.new()
+	add_crickets_button.text = "Add Crickets 🦗  (drop 3 in enclosure)"
+	add_crickets_button.pressed.connect(_on_add_crickets_pressed)
+	right.add_child(add_crickets_button)
 
 	water_button = Button.new()
 	water_button.text = "Give Water  (+30 hydration)"
@@ -221,6 +242,11 @@ func _build_stats_column(parent: Node) -> void:
 	lamp_button = Button.new()
 	lamp_button.pressed.connect(_on_lamp_pressed)
 	right.add_child(lamp_button)
+
+	mist_button = Button.new()
+	mist_button.text = "Mist Plant  💧 (+40 moisture)"
+	mist_button.pressed.connect(_on_mist_pressed)
+	right.add_child(mist_button)
 
 	right.add_child(HSeparator.new())
 
@@ -237,7 +263,6 @@ func _build_stats_column(parent: Node) -> void:
 
 	right.add_child(HSeparator.new())
 
-	# Turn log
 	var log_title = Label.new()
 	log_title.text = "Turn Log"
 	right.add_child(log_title)
@@ -257,10 +282,10 @@ func _build_stats_column(parent: Node) -> void:
 # BUTTON HANDLERS
 # ══════════════════════════════════════════════════════════════
 
-func _on_feed_pressed() -> void:
+func _on_add_crickets_pressed() -> void:
 	if not alive: return
-	hunger = min(100, hunger + 30)
-	_log("You fed %s.  Hunger → %d" % [gecko_name, hunger])
+	var spawned = _spawn_crickets(3)
+	_log("You dropped %d cricket%s into the enclosure." % [spawned, "s" if spawned != 1 else ""])
 	_update_display()
 
 func _on_water_pressed() -> void:
@@ -275,6 +300,15 @@ func _on_lamp_pressed() -> void:
 	_log("Heat lamp turned %s." % ("ON" if lamp_on else "OFF"))
 	_update_display()
 
+func _on_mist_pressed() -> void:
+	if not alive: return
+	if not plant_alive:
+		_log("The plant is dead — nothing to mist.")
+		return
+	plant_moisture = min(100, plant_moisture + 40)
+	_log("You misted the pothos.  Moisture → %d" % plant_moisture)
+	_update_display()
+
 func _on_end_turn_pressed() -> void:
 	if not alive: return
 	day       += 1
@@ -284,12 +318,15 @@ func _on_end_turn_pressed() -> void:
 		temperature = min(TEMP_MAX, temperature + 5)
 	else:
 		temperature = max(TEMP_MIN, temperature - 5)
-	_move_gecko()
 
-	# Build a turn summary
+	_move_gecko()
+	_gecko_hunt()
+	_advance_plant()
+	_age_crickets()
+
 	var events: Array = []
-	if hunger  == 0: events.append("starved")
-	if hydration == 0: events.append("dehydrated")
+	if hunger      == 0: events.append("starved")
+	if hydration   == 0: events.append("dehydrated")
 	if temperature <= TEMP_MIN: events.append("froze")
 	if temperature >= TEMP_MAX: events.append("overheated")
 
@@ -305,19 +342,88 @@ func _on_end_turn_pressed() -> void:
 	_update_display()
 
 func _on_restart_pressed() -> void:
-	hunger      = 100
-	hydration   = 100
-	temperature = 78
-	lamp_on     = true
-	day         = 1
-	alive       = true
-	gecko_x     = 1
-	gecko_y     = 2
-	# Clear log
+	hunger         = 100
+	hydration      = 100
+	temperature    = 78
+	lamp_on        = true
+	day            = 1
+	alive          = true
+	gecko_x        = 1
+	gecko_y        = 2
+	plant_health   = 100
+	plant_moisture = 60
+	plant_alive    = true
+	crickets.clear()
 	for child in log_container.get_children():
 		child.queue_free()
-	_log("New game started. Good luck, %s!" % gecko_name)
+	_log("New game. Good luck, %s!" % gecko_name)
 	_update_display()
+
+
+# ══════════════════════════════════════════════════════════════
+# CRICKET LOGIC
+# ══════════════════════════════════════════════════════════════
+
+func _spawn_crickets(count: int) -> int:
+	var spawned = 0
+	var attempts = 0
+	while spawned < count and attempts < 30:
+		attempts += 1
+		var x = randi() % GRID_COLS
+		var y = randi() % GRID_ROWS
+		# Don't spawn on gecko or plant tile, or on an existing cricket
+		if x == gecko_x and y == gecko_y: continue
+		if x == PLANT_X and y == PLANT_Y: continue
+		if _cricket_at(x, y) != -1: continue
+		crickets.append({"x": x, "y": y, "age": 0})
+		spawned += 1
+	return spawned
+
+func _cricket_at(x: int, y: int) -> int:
+	# Returns index of cricket at (x,y), or -1 if none
+	for i in range(crickets.size()):
+		if crickets[i].x == x and crickets[i].y == y:
+			return i
+	return -1
+
+func _gecko_hunt() -> void:
+	var idx = _cricket_at(gecko_x, gecko_y)
+	if idx != -1:
+		crickets.remove_at(idx)
+		hunger = min(100, hunger + CRICKET_HUNGER_RESTORE)
+		_log("%s caught a cricket! 🦗  Hunger → %d" % [gecko_name, hunger])
+
+func _age_crickets() -> void:
+	var died = 0
+	var i = crickets.size() - 1
+	while i >= 0:
+		crickets[i].age += 1
+		if crickets[i].age >= CRICKET_LIFESPAN:
+			crickets.remove_at(i)
+			died += 1
+		i -= 1
+	if died > 0:
+		_log("%d cricket%s died of old age." % [died, "s" if died > 1 else ""])
+
+
+# ══════════════════════════════════════════════════════════════
+# PLANT LOGIC
+# ══════════════════════════════════════════════════════════════
+
+func _advance_plant() -> void:
+	if not plant_alive: return
+	plant_moisture = max(0, plant_moisture - 15)
+	if plant_moisture < 20:
+		plant_health = max(0, plant_health - 10)
+		_log("The pothos is drying out!  Health → %d" % plant_health)
+	elif plant_moisture > 80:
+		plant_health = max(0, plant_health - 3)
+		_log("The pothos is waterlogged.  Health → %d" % plant_health)
+	else:
+		plant_health = min(100, plant_health + 2)
+	if plant_health == 0:
+		plant_alive = false
+		_log("The pothos has died. 🍂")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -326,6 +432,36 @@ func _on_restart_pressed() -> void:
 
 func _move_gecko() -> void:
 	var dirs = [Vector2i(-1,0), Vector2i(1,0), Vector2i(0,-1), Vector2i(0,1)]
+
+	# If a cricket is adjacent, move straight to it
+	for d in dirs:
+		var nx = gecko_x + d.x
+		var ny = gecko_y + d.y
+		if nx >= 0 and nx < GRID_COLS and ny >= 0 and ny < GRID_ROWS:
+			if _cricket_at(nx, ny) != -1:
+				gecko_x = nx
+				gecko_y = ny
+				return
+
+	# If a cricket is within 2 tiles, move toward the nearest one (70% chance)
+	var nearest = _nearest_cricket()
+	if nearest != Vector2i(-1, -1) and randf() < 0.7:
+		var best_dir = Vector2i(0, 0)
+		var best_dist = INF
+		for d in dirs:
+			var nx = gecko_x + d.x
+			var ny = gecko_y + d.y
+			if nx >= 0 and nx < GRID_COLS and ny >= 0 and ny < GRID_ROWS:
+				var dist = abs(nx - nearest.x) + abs(ny - nearest.y)
+				if dist < best_dist:
+					best_dist = dist
+					best_dir  = d
+		if best_dir != Vector2i(0, 0):
+			gecko_x += best_dir.x
+			gecko_y += best_dir.y
+			return
+
+	# Otherwise wander randomly
 	dirs.shuffle()
 	for d in dirs:
 		var nx = gecko_x + d.x
@@ -335,22 +471,47 @@ func _move_gecko() -> void:
 			gecko_y = ny
 			break
 
+func _nearest_cricket() -> Vector2i:
+	var best = Vector2i(-1, -1)
+	var best_dist = INF
+	for c in crickets:
+		var dist = abs(gecko_x - c.x) + abs(gecko_y - c.y)
+		if dist < best_dist:
+			best_dist = dist
+			best = Vector2i(c.x, c.y)
+	return best
+
 func _log(text: String) -> void:
 	var lbl = Label.new()
 	lbl.text = text
 	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD
 	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	log_container.add_child(lbl)
-	# Scroll to bottom on the next frame (after layout updates)
 	await get_tree().process_frame
 	log_scroll.scroll_vertical = log_scroll.get_v_scroll_bar().max_value
+
+func _tile_emoji(x: int, y: int) -> String:
+	var has_gecko   = (x == gecko_x and y == gecko_y)
+	var has_plant   = (plant_alive and x == PLANT_X and y == PLANT_Y)
+	var has_dead    = (not plant_alive and x == PLANT_X and y == PLANT_Y)
+	var has_cricket = (_cricket_at(x, y) != -1)
+	# Build up the tile contents
+	var parts: Array = []
+	if has_gecko:   parts.append("🦎")
+	if has_plant:   parts.append("🌱")
+	if has_dead:    parts.append("🍂")
+	if has_cricket: parts.append("🦗")
+	return "".join(parts)
 
 func _tile_color(x: int, y: int) -> Color:
 	if x == gecko_x and y == gecko_y:
 		return Color(0.25, 0.50, 0.15)
-	if y == GRID_ROWS - 1:      return Color(0.22, 0.14, 0.06)
-	if y >= GRID_ROWS - 3:      return Color(0.20, 0.16, 0.10)
-	if y >= 2:                  return Color(0.18, 0.20, 0.14)
+	if plant_alive and x == PLANT_X and y == PLANT_Y:
+		var t = plant_health / 100.0
+		return Color(0.10 + 0.15 * t, 0.30 + 0.20 * t, 0.08)
+	if y == GRID_ROWS - 1:  return Color(0.22, 0.14, 0.06)
+	if y >= GRID_ROWS - 3:  return Color(0.20, 0.16, 0.10)
+	if y >= 2:              return Color(0.18, 0.20, 0.14)
 	return Color(0.20, 0.22, 0.18)
 
 func _make_stylebox(color: Color) -> StyleBoxFlat:
@@ -360,20 +521,31 @@ func _make_stylebox(color: Color) -> StyleBoxFlat:
 	s.border_color = Color(0.45, 0.32, 0.18)
 	return s
 
+func _plant_status_text() -> String:
+	if not plant_alive:
+		return "Pothos:      dead 🍂"
+	var moisture_desc: String
+	if plant_moisture < 20:   moisture_desc = "bone dry ⚠"
+	elif plant_moisture < 40: moisture_desc = "dry"
+	elif plant_moisture > 80: moisture_desc = "waterlogged"
+	else:                     moisture_desc = "good"
+	return "Pothos:      health %d  moisture %d (%s)" % [plant_health, plant_moisture, moisture_desc]
+
 func _update_display() -> void:
-	# Grid
 	for y in range(GRID_ROWS):
 		for x in range(GRID_COLS):
 			var idx = y * GRID_COLS + x
 			tile_panels[idx].add_theme_stylebox_override("panel", _make_stylebox(_tile_color(x, y)))
-			tile_labels[idx].text = "🦎" if (x == gecko_x and y == gecko_y) else ""
+			tile_labels[idx].text = _tile_emoji(x, y)
 
-	# Stats
 	day_label.text         = "Day %d  —  %s" % [day, gecko_name]
 	hunger_label.text      = "Hunger:      %d / 100" % hunger
 	hydration_label.text   = "Hydration:   %d / 100" % hydration
 	temperature_label.text = "Temperature: %d°F  (safe: %d–%d)" % [temperature, TEMP_SAFE_LOW, TEMP_SAFE_HIGH]
 	lamp_button.text       = "Heat Lamp:  %s" % ("ON  🔆" if lamp_on else "OFF  🌑")
+	plant_label.text       = _plant_status_text()
+	cricket_label.text     = "Crickets:    %d in enclosure" % crickets.size()
+	mist_button.disabled   = not plant_alive
 
 	var layer: String
 	if gecko_y <= 1:   layer = "top layer"
@@ -383,24 +555,27 @@ func _update_display() -> void:
 	position_label.text = "Location:    col %d, %s" % [gecko_x, layer]
 
 	var warnings: Array = []
-	if hunger      < 30: warnings.append("hungry")
-	if hydration   < 30: warnings.append("thirsty")
-	if temperature < TEMP_SAFE_LOW:  warnings.append("too cold")
-	if temperature > TEMP_SAFE_HIGH: warnings.append("too hot")
+	if hunger      < 30:                 warnings.append("hungry")
+	if hydration   < 30:                 warnings.append("thirsty")
+	if temperature < TEMP_SAFE_LOW:      warnings.append("too cold")
+	if temperature > TEMP_SAFE_HIGH:     warnings.append("too hot")
+	if plant_alive and plant_moisture < 20: warnings.append("plant needs water")
+	if crickets.is_empty() and hunger < 50: warnings.append("no crickets in enclosure")
 
 	if not alive:
-		status_label.text        = "%s didn't make it. Try again!" % gecko_name
-		feed_button.disabled     = true
-		water_button.disabled    = true
-		lamp_button.disabled     = true
-		end_turn_button.disabled = true
+		status_label.text              = "%s didn't make it. Try again!" % gecko_name
+		add_crickets_button.disabled   = true
+		water_button.disabled          = true
+		lamp_button.disabled           = true
+		mist_button.disabled           = true
+		end_turn_button.disabled       = true
 		restart_button.show()
 	elif warnings.size() > 0:
-		status_label.text = "Warning: %s is %s!" % [gecko_name, ", ".join(warnings)]
+		status_label.text = "Warning: %s!" % ", ".join(warnings)
 	else:
-		status_label.text        = "%s is doing well." % gecko_name
-		feed_button.disabled     = false
-		water_button.disabled    = false
-		lamp_button.disabled     = false
-		end_turn_button.disabled = false
+		status_label.text              = "%s is doing well." % gecko_name
+		add_crickets_button.disabled   = false
+		water_button.disabled          = false
+		lamp_button.disabled           = false
+		end_turn_button.disabled       = false
 		restart_button.hide()
