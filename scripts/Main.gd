@@ -82,6 +82,8 @@ var cricket_label: Label
 var isopod_label: Label
 var status_label: Label
 var calcium_label: Label
+var help_screen: Control
+var help_button: Button
 var add_crickets_button: Button
 var dust_button: Button
 var water_button: Button
@@ -180,6 +182,7 @@ func _build_game_screen() -> void:
 	_build_grid_column(hbox)
 	_build_stats_column(hbox)
 	_build_log_column(hbox)
+	_build_help_screen()
 
 
 func _build_grid_column(parent: Node) -> void:
@@ -297,6 +300,13 @@ func _build_stats_column(parent: Node) -> void:
 	status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	status_label.autowrap_mode = TextServer.AUTOWRAP_WORD
 	right.add_child(status_label)
+
+	right.add_child(HSeparator.new())
+
+	help_button = Button.new()
+	help_button.text = "? How to Play"
+	help_button.pressed.connect(_on_help_pressed)
+	right.add_child(help_button)
 
 	right.add_child(HSeparator.new())
 
@@ -453,6 +463,139 @@ func _on_restart_pressed() -> void:
 		child.queue_free()
 	_log("New game. Good luck, %s!" % gecko_name)
 	_update_display()
+
+
+func _on_help_pressed() -> void:
+	help_screen.show()
+
+func _on_help_close_pressed() -> void:
+	help_screen.hide()
+
+
+# ══════════════════════════════════════════════════════════════
+# HELP SCREEN
+# ══════════════════════════════════════════════════════════════
+
+func _build_help_screen() -> void:
+	# Full-screen dimmed overlay
+	help_screen = Control.new()
+	help_screen.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	game_screen.add_child(help_screen)
+
+	var bg = ColorRect.new()
+	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	bg.color = Color(0, 0, 0, 0.72)
+	bg.mouse_filter = Control.MOUSE_FILTER_STOP
+	help_screen.add_child(bg)
+
+	# Panel fills the screen with a fixed inset so it never overflows
+	var panel = PanelContainer.new()
+	panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	panel.offset_left   =  60
+	panel.offset_right  = -60
+	panel.offset_top    =  40
+	panel.offset_bottom = -40
+	help_screen.add_child(panel)
+
+	var margin = MarginContainer.new()
+	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	margin.add_theme_constant_override("margin_left",   28)
+	margin.add_theme_constant_override("margin_right",  28)
+	margin.add_theme_constant_override("margin_top",    20)
+	margin.add_theme_constant_override("margin_bottom", 20)
+	panel.add_child(margin)
+
+	var vbox = VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 10)
+	margin.add_child(vbox)
+
+	# Title row
+	var title_row = HBoxContainer.new()
+	vbox.add_child(title_row)
+
+	var title = Label.new()
+	title.text = "How to Play — Gecko Enclosure Simulator"
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	title_row.add_child(title)
+
+	var close_btn = Button.new()
+	close_btn.text = "✕  Close"
+	close_btn.pressed.connect(_on_help_close_pressed)
+	title_row.add_child(close_btn)
+
+	vbox.add_child(HSeparator.new())
+
+	# Scrollable two-column content
+	var scroll = ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	vbox.add_child(scroll)
+
+	var cols = HBoxContainer.new()
+	cols.add_theme_constant_override("separation", 24)
+	cols.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(cols)
+
+	_help_column(cols, [
+		["STATS", ""],
+		["Hunger", "Drops 20/turn. Gecko hunts crickets automatically. Hits 0 = game over."],
+		["Hydration", "Drops 25/turn (more when humidity is low). Use Give Water. Hits 0 = game over."],
+		["Calcium", "Drops 5/turn. Replenished only by dusted crickets. Hits 0 = game over."],
+		["Felt Temp", "What the gecko actually feels based on its row. Keep between 72–88°F."],
+		["Base Temp", "Ambient temp at the bottom. Lamp ON = +5°F/turn. Lamp OFF = -5°F/turn."],
+		["Humidity", "Drops 8/turn. Below 30% isopods start dying and gecko gets thirstier."],
+		["Pothos", "Needs moisture 20–80. Too dry or waterlogged = health loss."],
+		["Crickets", "Crickets die after 5 turns if not eaten. Add fresh ones regularly."],
+		["Isopods", "Clean up waste. Reproduce slowly in good humidity. Die in dry conditions."],
+	])
+
+	_help_column(cols, [
+		["ACTIONS", ""],
+		["Add Crickets 🦗", "Drops 3 crickets on random tiles. Gecko hunts them automatically."],
+		["Cricket Dusting 🧂", "Toggle ON before adding crickets to coat them with calcium powder."],
+		["Give Water", "Directly adds +30 hydration to the gecko."],
+		["Heat Lamp", "Toggle to control base temperature. Watch felt temp, not just base."],
+		["Mist Enclosure 💧", "Adds +20 humidity and +40 plant moisture. Do this every 2–3 turns."],
+		["End Turn", "Advances one day. Gecko moves, eats, climate updates, plants grow."],
+		["GRID SYMBOLS", ""],
+		["🦎  Gecko", "Moves automatically. Hunts crickets. Thermoregulates by row."],
+		["🌱 / 🍂  Plant", "Healthy pothos / dead pothos."],
+		["🦗  Cricket", "Food. Dusted ones glow — check the log when gecko eats."],
+		["🪲  Isopod", "Cleanup crew in the substrate. Keep humidity up to keep them alive."],
+		["💩  Waste", "Gecko stress if standing here. Isopods will clean it up."],
+	])
+
+	help_screen.hide()
+
+
+func _help_column(parent: Node, rows: Array) -> void:
+	var col = VBoxContainer.new()
+	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.add_theme_constant_override("separation", 6)
+	parent.add_child(col)
+
+	for row in rows:
+		if row[0] in ["STATS", "ACTIONS", "GRID SYMBOLS"]:
+			var sep = HSeparator.new()
+			col.add_child(sep)
+			var heading = Label.new()
+			heading.text = row[0]
+			col.add_child(heading)
+			col.add_child(HSeparator.new())
+		else:
+			var hbox = HBoxContainer.new()
+			hbox.add_theme_constant_override("separation", 8)
+			col.add_child(hbox)
+
+			var key_lbl = Label.new()
+			key_lbl.text = row[0]
+			key_lbl.custom_minimum_size = Vector2(160, 0)
+			hbox.add_child(key_lbl)
+
+			var val_lbl = Label.new()
+			val_lbl.text = row[1]
+			val_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD
+			val_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			hbox.add_child(val_lbl)
 
 
 # ══════════════════════════════════════════════════════════════
