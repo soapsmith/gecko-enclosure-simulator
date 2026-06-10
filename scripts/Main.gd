@@ -23,8 +23,22 @@ const PLANT_Y: int = 1
 
 # Crickets
 var crickets: Array = []
-const CRICKET_LIFESPAN: int       = 5
-const CRICKET_HUNGER_RESTORE: int = 25
+var dust_mode: bool = false    # Whether next crickets will be calcium-dusted
+const CRICKET_LIFESPAN: int        = 5
+const CRICKET_HUNGER_RESTORE: int  = 25
+const CRICKET_CALCIUM_RESTORE: int = 20
+
+# Calcium
+var calcium: int = 100
+
+# Isopods and waste
+var isopods: Array     = []   # each: {x, y, age}
+var waste: Dictionary  = {}   # "x,y" -> int (0-100)
+
+const ISOPOD_MAX_AGE: int        = 40
+const ISOPOD_EAT_AMOUNT: int     = 10
+const GECKO_WASTE_PER_TURN: int  = 4
+const WASTE_STRESS_THRESHOLD: int = 40   # waste above this on gecko tile = stress
 
 const GRID_COLS: int = 4
 const GRID_ROWS: int = 6
@@ -65,8 +79,11 @@ var humidity_label: Label
 var position_label: Label
 var plant_label: Label
 var cricket_label: Label
+var isopod_label: Label
 var status_label: Label
+var calcium_label: Label
 var add_crickets_button: Button
+var dust_button: Button
 var water_button: Button
 var lamp_button: Button
 var mist_button: Button
@@ -134,7 +151,8 @@ func _on_start_pressed() -> void:
 	game_screen.show()
 	# Set initial atmosphere without tweening
 	grid_node.modulate = ATMOSPHERE[time_of_day]
-	_log("Day 1 — %s: %s moves in. A pothos sits in the corner." % [TIME_NAMES[time_of_day], gecko_name])
+	_spawn_isopods(5)
+	_log("Day 1 — %s: %s moves in. A pothos sits in the corner. 5 isopods settle into the substrate." % [TIME_NAMES[time_of_day], gecko_name])
 	_update_display()
 
 
@@ -261,6 +279,7 @@ func _build_stats_column(parent: Node) -> void:
 
 	hunger_label    = Label.new(); right.add_child(hunger_label)
 	hydration_label = Label.new(); right.add_child(hydration_label)
+	calcium_label   = Label.new(); right.add_child(calcium_label)
 	position_label  = Label.new(); right.add_child(position_label)
 	felt_temp_label = Label.new(); right.add_child(felt_temp_label)
 	base_temp_label = Label.new(); right.add_child(base_temp_label)
@@ -270,6 +289,7 @@ func _build_stats_column(parent: Node) -> void:
 
 	plant_label   = Label.new(); right.add_child(plant_label)
 	cricket_label = Label.new(); right.add_child(cricket_label)
+	isopod_label  = Label.new(); right.add_child(isopod_label)
 
 	right.add_child(HSeparator.new())
 
@@ -284,6 +304,10 @@ func _build_stats_column(parent: Node) -> void:
 	add_crickets_button.text = "Add Crickets 🦗  (drop 3 in enclosure)"
 	add_crickets_button.pressed.connect(_on_add_crickets_pressed)
 	right.add_child(add_crickets_button)
+
+	dust_button = Button.new()
+	dust_button.pressed.connect(_on_dust_pressed)
+	right.add_child(dust_button)
 
 	water_button = Button.new()
 	water_button.text = "Give Water  (+30 hydration)"
@@ -320,7 +344,14 @@ func _build_stats_column(parent: Node) -> void:
 func _on_add_crickets_pressed() -> void:
 	if not alive: return
 	var spawned = _spawn_crickets(3)
-	_log("You dropped %d cricket%s into the enclosure." % [spawned, "s" if spawned != 1 else ""])
+	var dust_note = " (dusted with calcium 🧂)" if dust_mode else ""
+	_log("You dropped %d cricket%s into the enclosure%s." % [spawned, "s" if spawned != 1 else "", dust_note])
+	_update_display()
+
+func _on_dust_pressed() -> void:
+	if not alive: return
+	dust_mode = not dust_mode
+	_log("Cricket dusting %s." % ("ON — next crickets will carry calcium" if dust_mode else "OFF"))
 	_update_display()
 
 func _on_water_pressed() -> void:
@@ -355,9 +386,12 @@ func _on_end_turn_pressed() -> void:
 		_tween_atmosphere(ATMOSPHERE[prev_time], ATMOSPHERE[time_of_day])
 
 	day      += 1
-	hunger    = max(0, hunger - 20)
+	var waste_key    = "%d,%d" % [gecko_x, gecko_y]
+	var waste_stress = 10 if waste.get(waste_key, 0) >= WASTE_STRESS_THRESHOLD else 0
+	hunger    = max(0, hunger - 20 - waste_stress)
 	var thirst_drain = 25 + (10 if humidity < 40 else 0)
 	hydration = max(0, hydration - thirst_drain)
+	calcium   = max(0, calcium - 5)
 	if lamp_on:
 		temperature = min(TEMP_MAX, temperature + 5)
 	else:
@@ -368,6 +402,8 @@ func _on_end_turn_pressed() -> void:
 	var old_y = gecko_y
 	_move_gecko()
 	var caught = _gecko_hunt()
+	_gecko_produce_waste()
+	_advance_isopods()
 	_advance_plant()
 	_age_crickets()
 
@@ -375,6 +411,7 @@ func _on_end_turn_pressed() -> void:
 	var events: Array = []
 	if hunger    == 0:        events.append("starved")
 	if hydration == 0:        events.append("dehydrated")
+	if calcium   == 0:        events.append("calcium deficiency")
 	if felt <= TEMP_MIN:      events.append("froze")
 	if felt >= TEMP_MAX:      events.append("overheated")
 
@@ -406,7 +443,12 @@ func _on_restart_pressed() -> void:
 	plant_moisture = 60
 	plant_alive    = true
 	crickets.clear()
+	isopods.clear()
+	waste.clear()
+	calcium   = 100
+	dust_mode = false
 	grid_node.modulate = ATMOSPHERE[0]
+	_spawn_isopods(5)
 	for child in log_container.get_children():
 		child.queue_free()
 	_log("New game. Good luck, %s!" % gecko_name)
@@ -464,7 +506,7 @@ func _spawn_crickets(count: int) -> int:
 		if x == gecko_x and y == gecko_y: continue
 		if x == PLANT_X  and y == PLANT_Y:  continue
 		if _cricket_at(x, y) != -1: continue
-		crickets.append({"x": x, "y": y, "age": 0})
+		crickets.append({"x": x, "y": y, "age": 0, "dusted": dust_mode})
 		spawned += 1
 	return spawned
 
@@ -477,9 +519,14 @@ func _cricket_at(x: int, y: int) -> int:
 func _gecko_hunt() -> bool:
 	var idx = _cricket_at(gecko_x, gecko_y)
 	if idx != -1:
+		var was_dusted = crickets[idx].get("dusted", false)
 		crickets.remove_at(idx)
 		hunger = min(100, hunger + CRICKET_HUNGER_RESTORE)
-		_log("%s caught a cricket! 🦗  Hunger → %d" % [gecko_name, hunger])
+		if was_dusted:
+			calcium = min(100, calcium + CRICKET_CALCIUM_RESTORE)
+			_log("%s caught a dusted cricket! 🦗🧂  Hunger → %d  Calcium → %d" % [gecko_name, hunger, calcium])
+		else:
+			_log("%s caught a cricket! 🦗  Hunger → %d" % [gecko_name, hunger])
 		return true
 	return false
 
@@ -494,6 +541,77 @@ func _age_crickets() -> void:
 		i -= 1
 	if died > 0:
 		_log("%d cricket%s died of old age." % [died, "s" if died > 1 else ""])
+
+
+# ══════════════════════════════════════════════════════════════
+# ISOPOD & WASTE LOGIC
+# ══════════════════════════════════════════════════════════════
+
+func _spawn_isopods(count: int) -> void:
+	for _i in range(count):
+		var x = randi() % GRID_COLS
+		var y = GRID_ROWS - 1   # substrate row
+		isopods.append({"x": x, "y": y, "age": 0})
+
+func _gecko_produce_waste() -> void:
+	var key = "%d,%d" % [gecko_x, gecko_y]
+	waste[key] = min(100, waste.get(key, 0) + GECKO_WASTE_PER_TURN)
+
+func _advance_isopods() -> void:
+	var died = 0
+
+	for iso in isopods:
+		# Eat waste on current tile
+		var key = "%d,%d" % [iso.x, iso.y]
+		if waste.get(key, 0) > 0:
+			waste[key] = max(0, waste[key] - ISOPOD_EAT_AMOUNT)
+			if waste[key] == 0:
+				waste.erase(key)
+
+		# Move — prefer adjacent tiles with waste, else random in bottom 2 rows
+		var best_dir  = Vector2i(0, 0)
+		var best_waste = -1
+		var dirs = [Vector2i(-1,0), Vector2i(1,0), Vector2i(0,-1), Vector2i(0,1)]
+		dirs.shuffle()
+		for d in dirs:
+			var nx = iso.x + d.x
+			var ny = iso.y + d.y
+			if nx >= 0 and nx < GRID_COLS and ny >= GRID_ROWS - 2 and ny < GRID_ROWS:
+				var w = waste.get("%d,%d" % [nx, ny], 0)
+				if w > best_waste:
+					best_waste = w
+					best_dir   = d
+		if best_dir != Vector2i(0, 0):
+			iso.x += best_dir.x
+			iso.y += best_dir.y
+
+		iso.age += 1
+
+	# Remove dead isopods (old age or dry conditions)
+	var i = isopods.size() - 1
+	while i >= 0:
+		var iso = isopods[i]
+		var dies_of_age = iso.age >= ISOPOD_MAX_AGE
+		var dies_of_dryness = humidity < 30 and randf() < 0.3
+		if dies_of_age or dies_of_dryness:
+			isopods.remove_at(i)
+			died += 1
+		i -= 1
+
+	if died > 0:
+		_log("%d isopod%s died." % [died, "s" if died > 1 else ""])
+
+	# Slow reproduction if conditions are good
+	if isopods.size() > 0 and isopods.size() < 12 and humidity >= 50 and randf() < 0.35:
+		_spawn_isopods(1)
+
+	# Warn if waste is building up somewhere
+	for k in waste:
+		if waste[k] >= WASTE_STRESS_THRESHOLD:
+			var parts = k.split(",")
+			if int(parts[0]) == gecko_x and int(parts[1]) == gecko_y:
+				_log("Waste is building up where %s is standing! 💩  Stress +10 hunger drain." % gecko_name)
+				break
 
 
 # ══════════════════════════════════════════════════════════════
@@ -601,11 +719,17 @@ func _log(text: String) -> void:
 
 func _has_warnings() -> bool:
 	var felt = _felt_temp()
-	return hunger < 30 or hydration < 30 \
+	return hunger < 30 or hydration < 30 or calcium < 30 \
 		or felt < TEMP_SAFE_LOW or felt > TEMP_SAFE_HIGH \
 		or humidity < 30 \
 		or (plant_alive and plant_moisture < 20) \
 		or (crickets.is_empty() and hunger < 50)
+
+func _isopod_at(x: int, y: int) -> bool:
+	for iso in isopods:
+		if iso.x == x and iso.y == y:
+			return true
+	return false
 
 func _tile_emoji(x: int, y: int) -> String:
 	var parts: Array = []
@@ -613,6 +737,9 @@ func _tile_emoji(x: int, y: int) -> String:
 	if plant_alive  and x == PLANT_X and y == PLANT_Y:    parts.append("🌱")
 	if not plant_alive and x == PLANT_X and y == PLANT_Y: parts.append("🍂")
 	if _cricket_at(x, y) != -1:                           parts.append("🦗")
+	if _isopod_at(x, y):                                  parts.append("🪲")
+	var w = waste.get("%d,%d" % [x, y], 0)
+	if w >= WASTE_STRESS_THRESHOLD:                        parts.append("💩")
 	return "".join(parts)
 
 func _tile_color(x: int, y: int) -> Color:
@@ -661,6 +788,8 @@ func _update_display() -> void:
 	time_label.text      = TIME_NAMES[time_of_day]
 	hunger_label.text    = "Hunger:      %d / 100" % hunger
 	hydration_label.text = "Hydration:   %d / 100" % hydration
+	calcium_label.text   = "Calcium:     %d / 100%s" % [calcium, "  ⚠" if calcium < 30 else ""]
+	dust_button.text     = "Cricket Dusting:  %s" % ("ON 🧂 (next crickets carry calcium)" if dust_mode else "OFF")
 	position_label.text  = "Location:    col %d, %s layer" % [gecko_x, layer]
 	felt_temp_label.text = "Felt temp:   %d°F  (safe %d–%d)" % [felt, TEMP_SAFE_LOW, TEMP_SAFE_HIGH]
 	base_temp_label.text = "Base temp:   %d°F  lamp %s" % [temperature, "ON" if lamp_on else "OFF"]
@@ -668,19 +797,28 @@ func _update_display() -> void:
 	lamp_button.text     = "Heat Lamp:  %s" % ("ON  🔆" if lamp_on else "OFF  🌑")
 	plant_label.text     = _plant_status_text()
 	cricket_label.text   = "Crickets:    %d in enclosure" % crickets.size()
+	var total_waste = 0
+	for w in waste.values(): total_waste += w
+	var waste_desc = "none" if total_waste == 0 else ("low" if total_waste < 40 else ("moderate" if total_waste < 100 else "high ⚠"))
+	isopod_label.text    = "Isopods:     %d in colony  |  Waste: %s" % [isopods.size(), waste_desc]
 
 	var warnings: Array = []
 	if hunger    < 30:                          warnings.append("hungry")
 	if hydration < 30:                          warnings.append("thirsty")
+	if calcium   < 30:                          warnings.append("low calcium")
 	if felt      < TEMP_SAFE_LOW:               warnings.append("too cold")
 	if felt      > TEMP_SAFE_HIGH:              warnings.append("too hot")
 	if humidity  < 30:                          warnings.append("air too dry")
 	if plant_alive and plant_moisture < 20:     warnings.append("plant needs water")
 	if crickets.is_empty() and hunger < 50:     warnings.append("no crickets in enclosure")
+	if isopods.is_empty():                      warnings.append("no isopods — waste will build up")
+	var gecko_waste = waste.get("%d,%d" % [gecko_x, gecko_y], 0)
+	if gecko_waste >= WASTE_STRESS_THRESHOLD:   warnings.append("gecko standing in waste")
 
 	if not alive:
 		status_label.text              = "%s didn't make it. Try again!" % gecko_name
 		add_crickets_button.disabled   = true
+		dust_button.disabled           = true
 		water_button.disabled          = true
 		lamp_button.disabled           = true
 		mist_button.disabled           = true
@@ -691,6 +829,7 @@ func _update_display() -> void:
 	else:
 		status_label.text              = "%s is doing well." % gecko_name
 		add_crickets_button.disabled   = false
+		dust_button.disabled           = false
 		water_button.disabled          = false
 		lamp_button.disabled           = false
 		mist_button.disabled           = false
